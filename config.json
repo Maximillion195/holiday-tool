@@ -1,0 +1,6 @@
+{
+  "username": "maxport.gen",
+  "password": "JustRoot1!",
+  "server": "https://ews-aln-core.cisco.com/xxexchng/tools/holidays.cgi?cmd=Holidays",
+  "emailTo": "holiday-tool@cisco.com"
+}

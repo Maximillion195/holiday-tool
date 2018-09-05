@@ -5,7 +5,7 @@ const logger = require('./utils/logger'),
 	IcsCreate = require('./lib/icsCreate.js'),
 	HolCreate = require('./lib/holCreate.js'),
 	file = require('./lib/file.js'),
-	creds = require('./creds.js')
+	config = require('./config.json')
 	CronJob = require('cron').CronJob;
 
 let liveHolData;
@@ -16,13 +16,14 @@ let liveHolData;
 // ----
 
 // Switches
-//	STAGE=1 - Uses the stage DB instead of prod
-// 	LOGGER=silly - Logs everything to console
-//	SKIPEMAIL=1 - Does not send an email
-//	FORCE=1 - Forces a build even if the data is up to date
-//  SKIPDB=1 - Skips writing to the DB
-//  RUNLOCAL=1 - Runs the app once with no email and no cron
-//  PROD=1 - Runs the app in production
+//	'SET STAGE=1 & node app' - Uses the stage DB instead of prod
+// 	'SET LOGGER=silly & node app' - Logs everything to console
+//	'SET SKIPEMAIL=1 & node app'- Does not send an email
+//	'SET FORCE=1 & node app' - Forces a build even if the data is up to date
+//  'SET SKIPDB=1 & node app' - Skips writing to the DB
+//  'SET CONVERT=1 & node app' - Converts a HOL file to an ICS, put the hol file in the convert folder and name it holiday.hol
+//  'SET RUNLOCAL=1 & node app' - Runs the app once with no email and no cron
+//  'SET PROD=1 & node app' - Runs the app in production
 
 if (process.env.RUNLOCAL == 1) {
 	start();
@@ -31,19 +32,20 @@ if (process.env.RUNLOCAL == 1) {
 	new CronJob('0 0 * * * *', function() {
 		start();
 	}, null, true, 'Europe/London', null, true);
+} else if (process.env.CONVERT == 1) {
+	convertHoltoICS();
 } else {
 	logger.verbose("\n\nPlease use one of the following switches:" +
-		"\n\nSTAGE=1 - Uses the stage DB instead of prod" +
-		"\nLOGGER=silly - Logs everything to console" +
-		"\nSKIPEMAIL=1 - Does not send an email" +
-		"\nFORCE=1 - Forces a build even if the data is up to date" +
-		"\nSKIPDB=1 - Skips writing to the DB" +
-		"\nRUNLOCAL=1 - Runs the app once with no email and no cron" +
-		"\nPROD=1 - Runs the app in production\n"
+		"\n\n'SET STAGE=1 & node app' - Uses the stage DB instead of prod" +
+		"\n'SET LOGGER=silly & node app' - Logs everything to console" +
+		"\n'SET SKIPEMAIL=1 & node app' - Does not send an email" +
+		"\n'SET FORCE=1 & node app' - Forces a build even if the data is up to date" +
+		"\n'SET SKIPDB=1 & node app' - Skips writing to the DB" +
+		"\n'SET CONVERT=1 & node app' - Converts a HOL file to an ICS, put the hol file in the convert folder and name it holiday.hol" +
+		"\n'SET RUNLOCAL=1 & node app' - Runs the app once with no email and no cron" +
+		"\n'SET PROD=1 & node app' - Runs the app in production\n"
 	);
 }
-
-//convertHoltoICS();
 
 function start() {
 
@@ -111,7 +113,7 @@ function start() {
 	}).then((res) => { 
 		//Json Log written
 		logger.verbose(res);
-		logger.verbose('Finshed');
+		logger.verbose('Finished');
 
 	}).catch((err) => {
 		logger.error(err);
@@ -121,18 +123,25 @@ function start() {
 function pullLiveData() {
 	return new Promise((resolve, reject) => {
 
-		axios.get('https://ews-aln-core.cisco.com/xxexchng/tools/holidays.cgi?cmd=Holidays', {
+		axios.get(config.server, {
 			auth: {
-				username: creds.username,
-				password: creds.password
+				username: config.username,
+				password: config.password
 			}
 		}
 		).then((res) => {
-
 			resolve(res.data.sections);
-
 		}).catch((err) => {
-			reject(err);
+
+			//console.log(err.response.status == 401);
+
+			if(err.response.status == 401) {
+				console.log(creds);
+				logger.error(err.response.body);
+				reject("Unauthorised. Your credentials may be wrong. Please update them in creds.js. Press CTRL + C to stop running");
+			} else {
+				reject(err);
+			}
 		});
 	});
 }
@@ -182,31 +191,41 @@ function buildFiles(holidayData, changes) {
 
 function convertHoltoICS(holData) {
 
-	let holFile = fs.readFileSync("./convert/holFile.hol", "utf-8").split("\r");
+	let holFile = fs.readFileSync("./convert/holiday.hol", "utf-8").split("\n");
+
+	if (holFile.indexOf("\r\n") != -1) {
+		holFile.split("\r\n");
+	} else if (holFile.indexOf("\r") != -1) {
+		holFile.split("\r");
+	} else if (holFile.indexOf("\n") != -1) {
+		holFile.split("\n");
+	}
 
 	holFileJson = {};
 
-	for (let [key, line] of Object.entries(holFile)) {
 
+	// Converts the hol file into JSON that is readable by the icsCreate.build method
+	for (let [key, line] of Object.entries(holFile)) {
+		// Gets the first line of the file
 		if(key == 0) {
 			// Get text between the two specifed characters
 			holFileJson.name = line.substring(line.lastIndexOf("[")+1,line.lastIndexOf("]"));
 			holFileJson.holidays = [];
 			continue;
 		}
+			// Splits the line to get event name and date in array
+			let items = line.split(',');
 
-		let items = line.split(',');
+			let holFileJsonEvent = {name: items[0], date: items[1].replace(/\//g,'-')};
 
-		let holFileJsonEvent = {name: items[0], date: items[1].replace(/\//g,'-')};
-
-		holFileJson.holidays.push(holFileJsonEvent);
+			holFileJson.holidays.push(holFileJsonEvent);
 	}
 
 	let icsCreate = new IcsCreate(holFileJson);
 
 	icsCreate.build().then((res) => {
-		file.writeCalFile("ics", '2018', holFileJson.name, res).then((res) => {
-			logger.verbose("Hol file converted to ICS");
+		file.writeCalFile("ics", 'converted', holFileJson.name, res).then((res) => {
+			logger.verbose("hol file converted to ICS - Saved in public/files/ics/converted");
 		});
 	})
 }
@@ -224,7 +243,7 @@ function emailChanges(changes) {
 
 		let mailOptions = {
 			from: "Holiday Tool <noreply@cisco.com>", // Sender
-			to: `holiday-tool@cisco.com`,
+			to: config.emailTo,
 			subject: "Updates",
 			attachments: attachments,
 			html: `These countries have been updated:<br><br>${ changes.join('<br>') }`
